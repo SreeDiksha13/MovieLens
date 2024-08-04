@@ -1,0 +1,962 @@
+---
+title: "MovieLens Project"
+author: "P Sree Diksha"
+date: "August, 2024"
+output:
+  html_document:
+   
+    theme: simplex
+    highlight: pygments
+    bibliography: bibliography.bib
+    csl: biomed-central.csl
+    code_folding: show
+    toc: true
+    toc_float: true
+---
+
+```{r include=FALSE}
+# A Prefix nulling hook.
+
+# Make sure to keep the default for normal processing.
+default_output_hook <- knitr::knit_hooks$get("output")
+
+# Output hooks handle normal R console output.
+knitr::knit_hooks$set( output = function(x, options) {
+
+  comment <- knitr::opts_current$get("comment")
+  if( is.na(comment) ) comment <- ""
+  can_null <- grepl( paste0( comment, "\\s*\\[\\d?\\]" ),
+                     x, perl = TRUE)
+  do_null <- isTRUE( knitr::opts_current$get("null_prefix") )
+  if( can_null && do_null ) {.
+    
+    align_index <- regexpr( "\\]", x )[1] - 1
+   #New Lines
+    re <- paste0( "^.{", align_index, "}\\]")
+    rep <- comment
+    x <- gsub( re, rep,  x )
+    re <- paste0( "\\\n.{", align_index, "}\\]")
+    rep <- paste0( "\n", comment )
+    x <- gsub( re, rep,  x )
+  }
+
+  default_output_hook( x, options )
+
+})
+
+knitr::opts_template$set("kill_prefix"=list(comment=NA, null_prefix=TRUE))
+```
+
+```{=html}
+<style>
+body {
+text-align: justify}
+</style>
+```
+<br>
+
+```{=html}
+<style type="text/css">
+
+h1.title {
+  font-size: 35px;
+
+}
+
+</style>
+```
+```{=html}
+<style>
+p.comment {
+background-color: #DBDBDB;
+padding: 10px;
+border: 1px solid black;
+margin-left: 1px;
+border-radius: 5px;
+font-style: italic;
+}
+
+</style>
+```
+### *PREFACE*
+
+<p class="comment">
+
+Recommender systems represent one of the most successful applications of machine learning in the business sector. These systems are a type of information filtering technology designed to predict the rating or preference a user might assign to a particular item. One notable success story is the Netflix competition, which began in October 2006. By the end of the competition in 2009, Netflix awarded a one million dollar prize to a for creating an algorithm that improved the accuracy of their recommendation engine by 10%.
+
+</p>
+
+<br> <br>
+
+### I. INTRODUCTION
+
+Aggarwal (2016) outlines two main approaches to recommendation systems: predicting rating values for user-item pairs ("prediction version" or "matrix completion problem") and recommending the top-k items for users ("ranking version").
+
+For this project, I use the [10M MovieLens dataset](https://grouplens.org/datasets/movielens/10m/) to build a recommendation system using the "prediction version." I train my models on the edx set and predict movie ratings in the validation set, evaluating performance with RMSE. This study explores various machine learning techniques, including regression models, ensemble methods, and matrix factorization, following data mining principles outlined by Ricci et al. (2015).
+
+<br>
+
+### II. DATASET SUMAMARY
+
+<br>
+
+##### [1.Overview]{style="color:black"}. {.tabset .tabset-fade .tabset-pills}
+
+<br>
+
+`Loading Libraries`
+
+```{r Libraries, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(caret)
+library(data.table)
+options(kableExtra.latex.load_packages = FALSE)
+library(kableExtra)
+library(lubridate)
+library(DT)
+library(wordcloud) 
+library(RColorBrewer) 
+library(ggthemes) 
+library(recommenderlab)
+library(irlba)
+library(recosystem)
+```
+
+`Importing the Datasets from the files and inspecting them.`
+
+```{r DataSets, message=FALSE, warning=FALSE}
+movies_path <- "C:/Users/sreed/OneDrive/Documents/Edx1/ml-10m/ml-10M100K/movies.dat"
+ratings_path <- "C:/Users/sreed/OneDrive/Documents/Edx1/ml-10m/ml-10M100K/ratings.dat"
+
+
+ratings <- fread(text = gsub("::", "\t", readLines(ratings_path)),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+head(ratings)
+
+movies <- str_split_fixed(readLines(movies_path), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+movies <- as.data.frame(movies) %>% 
+  mutate(movieId = as.numeric(movieId),
+         title = as.character(title),
+         genres = as.character(genres))
+head(movies)
+movielens <- left_join(ratings, movies, by = "movieId")
+head(movielens)
+```
+
+`Our validation set will be 10% of MovieLens data`
+
+```{r Validation Set, message=FALSE, warning=FALSE}
+set.seed(1)
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,] #temp is the validation set
+
+#To ensure that the userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Adding rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+rm( ratings, movies, test_index, temp, movielens, removed)
+
+```
+
+###### Edx Set
+
+```{r,comment=NA, null_prefix=TRUE}
+glimpse(edx)
+```
+
+###### Validation Set
+
+```{r,comment=NA, null_prefix=TRUE}
+glimpse(validation)
+```
+
+##### 
+
+After running the provided code, we observe that the edX dataset comprises 6 features and includes approximately 9,000,055 observations. The validation set, which represents 10% of the 10M MovieLens dataset, has the same features but contains a total of 999,999 records. We ensured that all `userId` and `movieId` values in the edX set are present in the validation set.
+
+Each row in these datasets represents a rating given by a user to a movie. The "rating" column is the target variable we aim to predict (`y`). Here are the features and their characteristics:
+
+***Quantitative Features***
+
+-   *userId*: Discrete, a unique identifier for the user.
+-   *movieId*: Discrete, a unique identifier for the movie.
+-   *timestamp*: Discrete, the date and time when the rating was given.
+
+***Qualitative Features***
+
+-   *title*: Nominal, the movie title (not unique).
+-   *genres*: Nominal, the genres associated with the movie.
+
+***Outcome, y***
+
+-   *rating*: Continuous, a score between 0 and 5 given for the movie.
+
+<br> <br>
+
+##### [2.Data exploration]{style="color:black"}
+
+<br>
+
+```{r edx_summary,comment=NA, null_prefix=TRUE}
+summary(edx)
+```
+
+> **`outcome, y : rating`**
+
+```{r}
+#The dataframe "explore_ratings" which contains half star and whole star ratings  from the Edx set : 
+
+group <-  ifelse((edx$rating == 1 |edx$rating == 2 | edx$rating == 3 | 
+                  edx$rating == 4 | edx$rating == 5) ,
+                   "whole_star", 
+                   "half_star") 
+
+explore_ratings <- data.frame(edx$rating, group)
+```
+
+```{r, fig.align='center'}
+
+# Histogram of ratings
+
+ggplot(explore_ratings, aes(x= edx.rating, fill = group)) +
+  geom_histogram( binwidth = 0.2) +
+  scale_x_continuous(breaks=seq(0, 5, by= 0.5)) +
+  scale_fill_manual(values = c("half_star"="purple", "whole_star"="brown")) +
+  labs(x="rating", y="number of ratings", caption = "source data: edx set") +
+  ggtitle("histogram : number of ratings for each rating")
+
+```
+
+Exploring the ratings in the edX set, we observe the following:
+
+-   **No user gives a rating of 0**: The average activity across users indicates that 0 is not used as a rating.
+-   **Top 5 ratings**: The most frequently given ratings, in order of frequency, are 4, 3, 5, 3.5, and 2.
+-   **Distribution of star ratings**: The histogram reveals that half-star ratings are less common compared to whole-star ratings.
+
+```{r Top_Genre, message=FALSE, warning=FALSE}
+###I create a data frame called `top_genre` that isolates each individual genre, excluding any combinations (e.g., "Action" without "Action|Crime|Thriller," "Comedy" without "Comedy|Romance"). 
+
+top_genre <- edx %>% separate_rows(genres, sep = "\\|") %>%
+  group_by(genres) %>%
+  summarize(count = n()) %>%
+  arrange(desc(count))
+
+datatable(top_genre, rownames = FALSE, filter="top", options = list(pageLength = 5, scrollX=T) ) %>%
+  formatRound('count',digits=0, interval = 3, mark = ",")
+
+
+layout(matrix(c(1,2), nrow =2) , heights = c(1,4))
+par(mar=rep(0,4))
+plot.new()
+text(x=0.5,y=0.5, "Top Genres by Number of Ratings")
+wordcloud(words=top_genre$genres,freq=top_genre$count,min.freq=50,
+          max.words = 20,random.order=FALSE,random.color=FALSE,
+          rot.per=0.35,colors = brewer.pal(8,"Dark2"),scale=c(5,.2),
+          family="plain",font=2,
+          main = "Top genres by number of ratings")
+```
+
+We notice that the "Drama" genre tops the chart with the highest number of movie ratings. It's followed closely by "Comedy" and "Action," which are also quite popular. Interestingly, there's a small category for movies without a specified genre, and it only contains 7 ratings. It's clear that while some genres dominate in popularity, there are always those few outliers that don't fit neatly into any specific category.
+
+```{r , fig.align='center' , message=FALSE, warning=FALSE}
+##Top Title
+top_title <- edx %>%
+  group_by(title) %>%
+  summarize(count=n()) %>%
+  top_n(20,count) %>%
+  arrange(desc(count))
+
+kable(head(edx %>%
+             group_by(title,genres) %>%
+             summarize(count=n()) %>%
+             top_n(20,count) %>%
+             arrange(desc(count)) ,
+           5)) %>%
+  kable_styling(bootstrap_options = "bordered", full_width = F , position ="center") %>%
+  column_spec(1,bold = T ) %>%
+  column_spec(2,bold =T) %>%
+  column_spec(3,bold=T)
+
+#Bar Chart
+top_title %>% 
+  ggplot(aes(x=reorder(title, count), y=count)) +
+  geom_bar(stat='identity', fill="lightpink") + coord_flip(y=c(0, 40000)) +
+  labs(x="", y="Number of Ratings") +
+  geom_text(aes(label= count), hjust=-0.1, size=3) +
+  labs(title="Top 20 movies title based \n on number of ratings" , caption = "Source data: Edx Set")
+```
+The inspection of the "title" attribute aligns with our previous analysis. Movies with the highest number of ratings fall into the top genre categories. For example, popular movies like "Pulp Fiction" (1994), "Forrest Gump" (1994), and "Jurassic Park" (1993) are among the top 5 in terms of the number of ratings. These movies belong to the Drama, Comedy, or Action genres, confirming the trend we observed.
+
+```{r, fig.align='center'}
+
+edx %>% group_by(genres) %>%
+  summarize(n = n(), avg = mean(rating), se = sd(rating)/sqrt(n())) %>%
+  filter(n >= 100000) %>% 
+  mutate(genres = reorder(genres, avg)) %>%
+  ggplot(aes(x = genres, y = avg, ymin = avg - 2*se, ymax = avg + 2*se)) + 
+  geom_point() +
+  geom_errorbar() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Error bar plots by genres" , caption = "Source data : Edx set") +
+  theme(
+    panel.background = element_rect(fill = "lightblue",
+                                    colour = "lightblue",
+                                    size = 0.5, linetype = "solid"),
+    panel.grid.major = element_line(size = 0.5, linetype = 'solid',
+                                    colour = "white"), 
+    panel.grid.minor = element_line(size = 0.25, linetype = 'solid',
+                                    colour = "white")
+  )
+```
+
+We observe that the generated plot shows strong evidence of a genre effect .
+
+<br>
+> **`quantitative features: UserId, movieId, timestamp`**
+
+```{r UserId_movieID, comment=NA, null_prefix=TRUE}
+edx %>%
+  summarize(n_users = n_distinct(userId),
+            n_movies = n_distinct(movieId))
+```
+
+Even though each row represents a rating given by one user to one movie, we have 69,878 unique `userId` values and 10,677 unique `movieId` values. This suggests that while `userId` and `movieId` are represented as integers, they might be more appropriately treated as factors for certain analyses. Additionally, there are fewer movies being rated than there are users rating them. 
+
+If we envision a large matrix with users as rows and movies as columns, a significant challenge is the sparsity of this matrix, meaning it will have many empty cells. This sparsity can lead to the curse of dimensionality, which complicates our analysis. These issues need to be addressed in our subsequent analysis.
+
+```{r userId_movieIdImagines, fig.align='center', warning=FALSE}
+# histogram of number of ratings by movieId
+
+edx %>% 
+  count(movieId) %>% 
+  ggplot(aes(n)) + 
+  geom_histogram( bins=30, color = "lightpink") +
+  scale_x_log10() + 
+  ggtitle("Movies") +
+  labs(subtitle  ="Number of ratings by movieId", 
+       x="movieId" , 
+       y="Number of ratings", 
+       caption ="source data : edx set") +
+  theme(panel.border = element_rect(colour="blue", fill=NA))
+#Histogram of number of ratings by userId
+edx %>% 
+  count(userId) %>% 
+  ggplot(aes(n)) + 
+  geom_histogram( bins=30, color = "maroon") +
+  scale_x_log10() + 
+  ggtitle("Users") +
+  labs(subtitle ="Number of ratings by UserId", 
+       x="userId" , 
+       y="Number of ratings") +
+  theme(panel.border = element_rect(colour="black", fill=NA))
+```
+
+Visual exploration of the number of ratings by `movieId` and `userId` reveals some interesting patterns: certain movies receive far more ratings than others, and some users are much more active in rating movies. This likely indicates the presence of movie effects and user effects in our data, where specific movies are consistently popular and certain users are more frequent raters.
+
+```{r , fig.align='center', message=FALSE}
+#The edx set contains the timestamp variable, representing the date and time when each rating was provided, measured in seconds since January 1, 1970. Using the as_datetime function from the lubridate package, I can convert each timestamp to the correct format. Then, I create a scatterplot with y as the average ratings and x as the date. Additionally, I use a smooth geom to help visualize patterns amidst any overplotting.
+
+
+edx %>% 
+  mutate(date = round_date(as_datetime(timestamp), unit = "week")) %>%
+  group_by(date) %>%
+  summarize(rating = mean(rating)) %>%
+  ggplot(aes(date, rating)) +
+  geom_point() +
+  geom_smooth() +
+  ggtitle("Timestamp, time unit : week")+
+  labs(subtitle = "average ratings",
+       caption = "source data : edx set")
+```
+
+Analyzing the trend of the average ratings versus the date , we can notice that there is some evidence of a time effect in the plot, but there is not a strong effect of time.
+
+
+<br>
+
+
+### III. Data Preprocessing
+
+Real-life data typically needs to be preprocessed (e.g., cleansed, filtered, transformed) before it can be effectively used in machine learning analysis.
+
+In this section, I will focus on data preprocessing techniques that are crucial for designing a recommender system. These techniques include similarity measures (such as Euclidean distance and Cosine distance), sampling methods, and dimensionality reduction (such as PCA or SVD). I will apply these techniques as needed.
+
+First, let's create the rating matrix. 
+
+<br>
+
+##### <span style="color:black">1. Data Transformation</span>
+
+When attempting to build our matrix, I encountered performance issues due to the vast amount of data. The `dcast` and `acast` functions from the `reshape2` and `data.table` packages were very time-consuming and could not handle vectors larger than 2.8 GB. To address these issues, I decided to switch to the `Matrix` and `Matrix.utils` packages, which include the `sparseMatrix` function. This approach is more efficient and better manages memory, making it suitable for handling large datasets.
+
+```{r}
+
+edx.copy <- edx
+
+edx.copy$userId <- as.factor(edx.copy$userId)
+edx.copy$movieId <- as.factor(edx.copy$movieId)
+```
+
+```{r userMatrix,  warning=FALSE, message=FALSE,comment=NA,null_prefix=TRUE}
+
+
+edx.copy$userId <- as.numeric(edx.copy$userId)
+edx.copy$movieId <- as.numeric(edx.copy$movieId)
+
+sparse_ratings <- sparseMatrix(i = edx.copy$userId,
+                         j = edx.copy$movieId ,
+                         x = edx.copy$rating, 
+                         dims = c(length(unique(edx.copy$userId)),
+                                  length(unique(edx.copy$movieId))),  
+                         dimnames = list(paste("u", 1:length(unique(edx.copy$userId)), sep = ""), 
+                                        paste("m", 1:length(unique(edx.copy$movieId)), sep = "")))
+
+
+
+rm(edx.copy)
+
+#First 10 users.
+sparse_ratings[1:10,1:10]
+
+
+#Convert rating matrix into a recommenderlab sparse matrix
+ratingMat <- new("realRatingMatrix", data = sparse_ratings)
+ratingMat
+```
+
+##### <span style="color:black">2. Similarity Measures</span>
+
+In data mining for recommender systems, whether using collaborative filtering, content-based methods, or hybrid approaches, defining an appropriate similarity or distance measure is crucial.
+
+To assess similarity between users or items, several measures can be used:
+
+- Minkowski Distance
+- Mahalanobis Distance
+- Pearson Correlation
+- Cosine Similarity
+
+For this analysis, I will use Cosine Similarity. This measure calculates the cosine of the angle between two non-zero vectors in an inner product space. According to Ricci et al. (2015), it is defined as:
+
+$$\cos(\pmb x, \pmb y) = \frac {\pmb x \cdot \pmb y}{||\pmb x|| \cdot ||\pmb y||}$$
+
+Here, $\cdot$ denotes the dot product of the vectors, and $||\pmb x||$ represents the norm of vector $\pmb x$.
+
+The benefits of using Cosine Similarity, as noted by Saranya et al. (2016), include:
+
+- It addresses issues of sparsity, scalability, and cold start, and is more robust against noise.
+- It enhances prediction accuracy and consistency.
+- It can be computed even if the matrix has many missing values.
+- It performs well even in high-dimensional spaces.
+- It has low computational complexity, especially with sparse vectors.
+
+Given the large dataset, I will compute the similarity for the first 50 users to facilitate visualization.
+
+```{r Similarity, out.width=c('50%', '50%'), fig.show='hold'}
+#i calculate the user similarity using the cosine similarity
+
+similarity_users <- similarity(ratingMat[1:50,], 
+                               method = "cosine", 
+                               which = "users")
+
+image(as.matrix(similarity_users), main = "User similarity")
+
+
+
+#Using the same approach, I compute similarity between  movies.
+
+similarity_movies <- similarity(ratingMat[,1:50], 
+                               method = "cosine", 
+                               which = "items")
+
+image(as.matrix(similarity_movies), main = "Movies similarity")
+
+```
+
+In the provided matrices, each row and column represent users, with each cell indicating the similarity between two users. The redder the cell, the higher the similarity between the two users. Note that the diagonal cells are red because they compare each user to themselves.
+
+Analyzing the two similarity matrices reveals a plausible pattern: some users exhibit similar rating patterns, and some movies show similar rating trends. This suggests the existence of clusters of users and movies with similar characteristics.
+
+<br>
+
+##### <span style="color:red">3. Dimensionality Reduction</span>
+
+The similarity matrices indicate that there might be users with similar rating patterns and movies with similar rating patterns. However, issues like sparsity and the curse of dimensionality persist, along with many missing values. Dimensionality reduction techniques, such as Principal Component Analysis (PCA) and Singular Value Decomposition (SVD), can address these problems by transforming the high-dimensional data into a lower-dimensional space.
+
+To manage memory constraints, I will use the `irlba` package, which offers a fast and memory-efficient method for computing a partial SVD. The augmented implicitly restarted Lanczos bidiagonalization algorithm (IRLBA) approximates the largest (or smallest) singular values and corresponding singular vectors of a matrix, either sparse or dense, as detailed by Baglama and Reichel.
+
+According to Irizarry (2018) in *Matrix Factorization* (accessed January 15, 2019) at <https://rafalab.github.io/dsbook/matrix-factorization.html>, SVD allows us to decompose an $N × P$ matrix $Y$ (where $P < N$) into:
+
+$$Y = UDV^T$$
+
+where:
+- **U**: An orthogonal matrix of dimensions \( N \times m \)
+- **D**: A diagonal matrix of singular values of the original matrix, dimensions \( m \times m \)
+- **V**: An orthogonal matrix of dimensions \( m \times P \)
+```{r}
+# Ensure required package is loaded
+library(irlba)
+
+# Set seed for reproducibility
+set.seed(1)
+
+# Perform Singular Value Decomposition
+Y <- irlba(sparse_ratings, tol = 1e-4, verbose = TRUE, nv = 100, maxit = 1000)
+
+# Plot singular values
+plot(Y$d, pch = 20, col = "blue", cex = 1.5, xlab = 'Singular Value', ylab = 'Magnitude', 
+     main = "Singular Values for User-Movie Matrix")
+
+# Calculate sum of squares of all singular values
+all_sing_sq <- sum(Y$d^2)
+
+# Variability described by first 6, 12, and 20 singular values
+first_six <- sum(Y$d[1:6]^2)
+print(first_six / all_sing_sq)
+
+first_12 <- sum(Y$d[1:12]^2)
+print(first_12 / all_sing_sq)
+
+first_20 <- sum(Y$d[1:20]^2)
+print(first_20 / all_sing_sq)
+
+# Calculate percentage of sum of squares explained
+perc_vec <- cumsum(Y$d^2) / all_sing_sq
+
+# Plot the percentage of sum of squares
+plot(perc_vec, pch = 20, col = "blue", cex = 1.5, xlab = 'Number of Singular Values', ylab = '% of Sum of Squares of Singular Values', 
+     main = "Choosing k for Dimensionality Reduction")
+
+
+
+```
+
+The first six singular values capture over half of the variability in the imputed ratings matrix. With the first dozen singular values accounting for nearly 70% of the variability, and the first twenty covering more than 75%, it's clear that a relatively small number of singular values can explain a significant portion of the data's variance.
+
+To determine the optimal number of singular values, I aim to identify the smallest number \( k \) such that the sum of the squares of these first \( k \) singular values represents at least 90% of the total sum of the squares of all singular values. By plotting the running sum of squares for the singular values, I find that achieving this 90% threshold requires between 50 and 60 singular values.
+
+```{r K-Values}
+#To find the exact value of k, we calculate  the length of the vector that remains from our running sum of squares after excluding any items within that vector that exceed 0.90.
+
+k = length(perc_vec[perc_vec <= .90])
+k
+
+#The dcomposition of Y ; matrices U, D, and V accordingly:
+
+U_k <- Y$u[, 1:k]
+dim(U_k)
+
+D_k <- Diagonal(x = Y$d[1:k])
+dim(D_k)
+
+V_k <- t(Y$v)[1:k, ]
+dim(V_k)
+```
+
+We observe that setting \( k = 55 \) retains 90% of the variability in the data. With this choice, we have:
+
+- A matrix \( D_k \) of size 55 × 55
+- A matrix \( U_k \) of size 69,878 × 55
+- A matrix \( V_k \) of size 55 × 10,677
+
+The total number of numeric values required to store these component matrices is:
+
+$$(69,878 \times 55) + (55 \times 55) + (55 \times 10,677) = 4,433,550$$
+
+This represents about a 50.7% reduction in storage requirements compared to the original 9,000,055 entries.
+
+Even with this dimensionality reduction, memory constraints remain an issue. Therefore, we need to apply additional reduction techniques. To address this, we'll focus on the most relevant data by selecting only the users and movies with substantial interactions.
+
+<br>
+
+##### <span style="color:red">4. Relevant Data</span>
+
+Given that some users have rated more movies than others, it makes sense to focus on the most active users and the most popular movies. To identify and select these relevant users and movies, we will:
+
+1. Define the minimum number of movies a user must have rated.
+2. Define the minimum number of users who must have rated a movie.
+3. Select users and movies that meet these criteria.
+
+This approach helps to visualize only those users who have seen many movies and those movies that have been seen by many users.
+```{r ratings_movies}
+#a
+min_n_movies <- quantile(rowCounts(ratingMat), 0.9)
+print(min_n_movies)
+#b
+min_n_users <- quantile(colCounts(ratingMat), 0.9)
+print(min_n_users)
+#c
+ratings_movies <- ratingMat[rowCounts(ratingMat) > min_n_movies,
+                            colCounts(ratingMat) > min_n_users]
+ratings_movies
+```
+
+Here's a paraphrased version of the text:
+
+---
+
+We observe that with \( k = 55 \), we retain 90% of the variability. Thus, we end up with:
+
+- A matrix \( D_k \) of size 55 × 55
+- A matrix \( U_k \) of size 69,878 × 55
+- A matrix \( V_k \) of size 55 × 10,677
+
+The total number of numeric values required to store these matrices is:
+
+$$(69,878 \times 55) + (55 \times 55) + (55 \times 10,677) = 4,433,550$$
+
+This is about a 50.7% reduction in storage needs compared to the original 9,000,055 entries.
+
+Even with this dimensionality reduction, memory issues persist, so additional reduction techniques are necessary. To address this, we focus on the most relevant data by selecting users and movies with significant interactions.
+
+<br>
+
+##### <span style="color:red">4. Relevant Data</span>
+
+Since some users have rated many more movies than others, it makes sense to focus on the most active users and the most popular movies. To identify and select these relevant users and movies, we follow these steps:
+
+1. Define the minimum number of movies a user must have rated.
+2. Define the minimum number of users who must have rated a movie.
+3. Select users and movies that meet these criteria.
+
+This approach helps us concentrate on the users who have seen many movies and the movies that have been rated by many users.
+
+---
+
+### IV. Methods and Analysis
+
+In this section, I will explain the methodologies used for various Machine Learning algorithms and present the metrics for model performance evaluation.
+
+<br>
+
+##### <span style="color:red">1. Evaluated Algorithms</span>
+
+**1.1 Regression Models**
+
+To build linear regression models as basic recommendation systems, I followed the approach outlined by Irizarry (2018). I began with a model where all ratings were considered equal, with differences attributed to random variation:
+
+$$Y_{u,i} = \mu + \varepsilon_{u,i}$$
+
+where:
+
+- \( \mu \) is the average rating for all movies
+- \( \varepsilon_{u,i} \) are random errors
+
+I then progressively incorporated various effects into the model:
+
+- **Movie Effects**: Some movies are rated higher than others. To account for this, I added a movie-specific term \( b_i \):
+
+$$Y_{u,i} = \mu + b_i + \varepsilon_{u,i}$$
+
+where \( b_i \) represents the average rating for movie \( i \).
+
+- **Movie + User Effects**: Since some users rate more frequently, I added a user-specific effect \( b_u \):
+
+$$Y_{u,i} = \mu + b_i + b_u + \varepsilon_{u,i}$$
+
+where \( b_u \) accounts for user-specific tendencies.
+
+- **Movie + User + Time Effects**: To consider temporal variations, I included a time effect \( f(d_{u,i}) \), where \( d_{u,i} \) is the date of the rating:
+
+$$Y_{u,i} = \mu + b_i + b_u + f(d_{u,i}) + \varepsilon_{u,i}$$
+
+For simplicity, I converted timestamps to weekly intervals for analysis.
+
+- **Movie + User + Genre Effects**: Incorporating genre information into the model:
+
+$$Y_{u,i} = \mu + b_i + b_u + \sum_{k=1}^K x_{u,i} \beta_k + \varepsilon_{u,i}$$
+
+where \( x_{u,i} \) indicates if movie \( i \) belongs to genre \( k \). This model was considered but not analyzed in detail.
+
+To estimate the parameters \( \hat{b}_i \), \( \hat{b}_u \), and \( \hat{b}_t \), the **lm()** function was used, though it's slow due to the large number of effects. The estimated least squares are:
+
+- \( \hat{b}_i \): Average of \( y_{u,i} - \hat{\mu} \) for each movie \( i \)
+- \( \hat{b}_u \): Average of \( y_{u,i} - \hat{\mu} - \hat{b}_i \)
+- \( \hat{b}_t \): Average of \( y_{u,i} - \hat{\mu} - \hat{b}_i - \hat{b}_u \)
+
+**Regularization**
+
+Regularization helps to manage large estimates and prevent overfitting by adding a penalty for large values of \( b_i \) and \( b_u \). This is done by minimizing the following equation:
+
+$$\frac{1}{N} \sum_{u,i} \left(y_{i,u} - \mu - b_i - b_u \right)^2 + \lambda \left(\sum_{i} b_i^2 + \sum_{u} b_u^2\right)$$
+
+The regularization term \( \lambda \left(\sum_{i} b_i^2 + \sum_{u} b_u^2\right) \) penalizes the magnitudes of \( b_i \) and \( b_u \), helping to avoid overfitting. The optimal values of \( b_i \) and \( b_u \) are:
+
+$$\hat{b}_i(\lambda) = \frac{1}{\lambda + n_i} \sum_{u=1}^{n_i} \left(Y_{u,i} - \hat{\mu}\right)$$
+
+The optimal \( \lambda \) is chosen through cross-validation to minimize the RMSE.
+
+$$\hat{b}_u(\lambda) = \frac{1}{\lambda + n_i} \sum_{u=1}^{n_i} \left(Y_{u,i} - \hat{\mu} - \hat{b}_i \right)$$
+Here's the paraphrased version of the provided text:
+
+---
+
+When \( n_i \), the number of ratings for movie \( i \), is very large, the estimate for \( b_i \) becomes stable and the regularization parameter \( \lambda \) has minimal effect, as \( n_i + \lambda \approx n_i \). Conversely, when \( n_i \) is small, \( \hat{b}_i(\lambda) \) is shrunk towards zero, with larger values of \( \lambda \) causing more shrinkage.
+
+**1.2 Recommender Engines**
+
+- **Slope One**
+
+Slope One, introduced by Daniel Lemire and Anna Maclachlan in their 2005 paper *“Slope One Predictors for Online Rating-Based Collaborative Filtering”*, is a simple and effective method for collaborative filtering based on item similarity. Despite its simplicity, Slope One achieves accuracy comparable to more complex and resource-intensive algorithms. This method predicts ratings based on the average differences between items, using weighted values for these differences. For implementation, we followed these steps:
+
+1. Created copies of the edx and validation datasets, retaining only the userId, movieId, and rating columns.
+2. Adjusted variable names and types for compatibility with the SlopeOne package.
+3. Due to high RAM usage, we sampled the edx.copy dataset to create a smaller training set using a random sampling method (30% of the data).
+4. Normalized the ratings, built the Slope One model, and made predictions on the validation set.
+
+- **Matrix Factorization with Stochastic Gradient Descent**
+
+Matrix Factorization is a popular technique for recommendation systems, where the goal is to approximate the rating matrix.
+
+For matrix factorization with stochastic gradient descent, we followed these steps:
+
+1. Created copies of the edx and validation datasets, retaining only userId, movieId, and rating columns. The data was arranged in sparse matrix triplet form for the recosystem package.
+2. Unlike other R packages, recosystem reduces memory usage by storing the model on disk and writing results to files rather than keeping them in memory. Thus, we used the entire edx.copy dataset (9,000,055 entries) for training and the validation set (999,999 entries).
+3. Built the model using the Reco() function, tuned parameters using the tune() method, trained the model with train(), and made predictions using predict().
+
+**1.3 Ensemble Methods**
+
+- **GBDT: Gradient Boosting Decision Trees**
+
+Gradient Boosting Decision Trees (GBDT) is an ensemble method that builds trees sequentially to refine predictions. H2O's GBM algorithm constructs trees in parallel, following Hastie et al. (2001):
+
+1. Initialize \( f_{k0} = 0 \) for \( k = 1,2,\ldots,K \)
+2. For \( m = 1 \) to \( M \):
+   - Compute \( p_{k}(x) = \frac{e^{f_{k}(x)}}{\sum_{l=1}^{K}e^{f_{l}(x)}} \) for \( k = 1,2,\ldots,K \)
+   - For \( k = 1 \) to \( K \):
+     - Compute residuals \( r_{ikm} = y_{ik} - p_{k}(x_{i}) \)
+     - Fit a regression tree to residuals \( r_{ikm} \), giving terminal regions \( R_{jim} \)
+     - Compute \( \gamma_{jkm} = \frac{K-1}{K} \frac{\sum_{x_{i} \in R_{jkm}} (r_{ikm})}{\sum_{x_{i} \in R_{jkm}} |r_{ikm}| (1 - |r_{ikm}|)} \)
+     - Update \( f_{km}(x) = f_{k,m-1}(x) + \sum_{j=1}^{J_m} \gamma_{jkm} I(x \in R_{jkm}) \)
+
+The final model \( \hat{f_{k}}(x) = f_{kM}(x) \) is obtained after \( M \) iterations. GBM parameters such as nfolds, ntrees, max_depth, and learn rate help control model performance and prevent overfitting. For large datasets, the number of nodes is adjusted accordingly. Additional predictors, like the number of movies rated by each user and the number of users rating each movie, are included to improve clustering.
+
+For our analysis, we created copies of the edx and validation datasets, added attributes for the number of movies rated and the number of users per movie, converted IDs to factors, and performed GBM with parameter tuning. We also built a random forest model using the same training data and created a stacked ensemble combining the best GBM and random forest models.
+
+.
+
+<br>
+
+##### 2. Model Performance Evaluation
+
+To evaluate model performance, we assess how closely predictions match the true ratings in the validation set using Root Mean Square Error (RMSE). RMSE is calculated by first determining the residuals, which are the differences between actual values and predicted values. Residuals can be positive or negative, depending on whether predictions overestimate or underestimate the actual values. Squaring these residuals, averaging them, and taking the square root gives the RMSE, which measures the spread of the predicted values around the true values:
+
+$$\text{RMSE} = \sqrt{\frac{1}{N} \sum_{u,i} \left( \hat{y}_{u,i} - y_{u,i} \right)^2 }$$
+
+
+```{r}
+#i define the RMSE function as:
+RMSE <- function(true_ratings, predicted_ratings){
+    sqrt(mean((true_ratings - predicted_ratings)^2))
+  }
+```
+
+
+<br>
+
+### V. Results
+
+<br>
+
+##### <span style="color:black">1.Identifying the optimal model</span>
+
+> **1.1 `Regression Models`{#rg}** 
+
+```{r RMSE_Models}
+
+#a.movie effect
+
+# i calculate the average of all ratings of the edx set
+mu <- mean(edx$rating)
+
+# i calculate b_i on the training set
+movie_avgs <- edx %>% 
+  group_by(movieId) %>% 
+  summarize(b_i = mean(rating - mu))
+
+# predicted ratings
+predicted_ratings_bi <- mu + validation %>% 
+  left_join(movie_avgs, by='movieId') %>%
+  .$b_i
+
+
+#b.movie + user effect
+
+#i calculate b_u using the training set 
+user_avgs <- edx %>%  
+  left_join(movie_avgs, by='movieId') %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - mu - b_i))
+
+#predicted ratings
+predicted_ratings_bu <- validation %>% 
+  left_join(movie_avgs, by='movieId') %>%
+  left_join(user_avgs, by='userId') %>%
+  mutate(pred = mu + b_i + b_u) %>%
+  .$pred
+
+
+#c.movie + user + time effect
+
+#i create a copy of validation set , valid, and create the date feature which is the timestamp converted to a datetime object  and  rounded by week.
+
+valid <- validation
+valid <- valid %>%
+  mutate(date = round_date(as_datetime(timestamp), unit = "week")) 
+
+# i calculate time effects ( b_t) using the training set
+temp_avgs <- edx %>%
+  left_join(movie_avgs, by='movieId') %>%
+  left_join(user_avgs, by='userId') %>%
+  mutate(date = round_date(as_datetime(timestamp), unit = "week")) %>%
+  group_by(date) %>%
+  summarize(b_t = mean(rating - mu - b_i - b_u))
+
+# predicted ratings
+  predicted_ratings_bt <- valid %>% 
+  left_join(movie_avgs, by='movieId') %>%
+  left_join(user_avgs, by='userId') %>%
+  left_join(temp_avgs, by='date') %>%
+  mutate(pred = mu + b_i + b_u + b_t) %>%
+  .$pred
+
+#d.  i calculate the RMSE for movies, users and time effects 
+
+rmse_model1 <- RMSE(validation$rating,predicted_ratings_bi)  
+rmse_model1
+rmse_model2 <- RMSE(validation$rating,predicted_ratings_bu)
+rmse_model2
+rmse_model3 <- RMSE(valid$rating,predicted_ratings_bt)
+rmse_model3
+
+```
+
+
+With the combination of movie and user effects, our RMSE has improved by approximately 10% compared to using only movie effects. However, the inclusion of the time effect did not result in a significant improvement, with only about a 0.011% decrease in RMSE. Therefore, we will proceed with regularization focusing solely on the movie and user effects, as detailed in the Data Analysis and Methods section.
+
+```{r Regularisation}
+#before to proceed with regularization, i just remove the object copy of validation, "valid"
+rm(valid)
+
+#e. regularization 
+
+# remembering (5), $\lambda$ is a tuning parameter. We can use cross-validation to choose it
+
+lambdas <- seq(0, 10, 0.25)
+
+rmses <- sapply(lambdas, function(l){
+  
+  mu_reg <- mean(edx$rating)
+  
+  b_i_reg <- edx %>% 
+    group_by(movieId) %>%
+    summarize(b_i_reg = sum(rating - mu_reg)/(n()+l))
+  
+  b_u_reg <- edx %>% 
+    left_join(b_i_reg, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u_reg = sum(rating - b_i_reg - mu_reg)/(n()+l))
+  
+  predicted_ratings_b_i_u <- 
+    validation %>% 
+    left_join(b_i_reg, by = "movieId") %>%
+    left_join(b_u_reg, by = "userId") %>%
+    mutate(pred = mu_reg + b_i_reg + b_u_reg) %>%
+    .$pred
+  
+  return(RMSE(validation$rating,predicted_ratings_b_i_u))
+})
+
+library(ggplot2)
+qplot(lambdas, rmses)
+
+
+#For the full model, the optimal  λ is:
+
+lambda <- lambdas[which.min(rmses)]
+lambda
+
+rmse_model4 <- min(rmses)
+rmse_model4
+
+
+#summarize all the rmse on validation set for Linear regression models
+
+rmse_results <- data.frame(Methods=c("Movie effect","Movie + user effects","Movie + user + time effects", "Regularized Movie + User Effect Model"),rmse = c(rmse_model1, rmse_model2,rmse_model3, rmse_model4))
+
+library(kableExtra)
+
+kable(rmse_results) %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE, position = "center") %>%
+  kable_styling(bootstrap_options = "bordered", full_width = FALSE, position = "center") %>%
+  column_spec(1, bold = TRUE) %>%
+  column_spec(2, bold = TRUE, color = "black", background = "pink")
+```
+
+Regularization has successfully reduced the RMSE to 0.8648170, which indicates an improvement in the model's predictive accuracy. By penalizing large estimates and controlling for overfitting, regularization helps to create a more generalizable model. This is especially useful when dealing with sparse data or when some features have fewer observations. 
+
+To summarize:
+- **Initial RMSE**: Higher (before regularization)
+- **RMSE after Regularization**: 0.8648170
+
+This reduction suggests that your regularization approach is effectively addressing overfitting and improving the model's performance.
+
+<br>
+> **`Recommender engines`{#rs}**
+
+```{r UBCF}
+
+# a. POPULAR , UBCF and IBCF algorithms of the recommenderlab package
+
+model_pop <- Recommender(ratings_movies, method = "POPULAR", 
+                      param=list(normalize = "center"))
+
+#prediction example on the first 10 users
+pred_pop <- predict(model_pop, ratings_movies[1:10], type="ratings")
+as(pred_pop, "matrix")[,1:10]
+
+#Calculation of rmse for popular method 
+set.seed(1)
+e <- evaluationScheme(ratings_movies, method="split", train=0.7, given=-5)
+#5 ratings of 30% of users are excluded for testing
+
+model_pop <- Recommender(getData(e, "train"), "POPULAR")
+
+prediction_pop <- predict(model_pop, getData(e, "known"), type="ratings")
+
+rmse_popular <- calcPredictionAccuracy(prediction_pop, getData(e, "unknown"))[1]
+rmse_popular
+
+#Estimating rmse for UBCF using Cosine similarity and selected n as 50 based on cross-validation
+set.seed(1)
+model <- Recommender(getData(e, "train"), method = "UBCF", 
+                     param=list(normalize = "center", method="Cosine", nn=50))
+
+prediction <- predict(model, getData(e, "known"), type="ratings")
+
+rmse_ubcf <- calcPredictionAccuracy(prediction, getData(e, "unknown"))[1]
+rmse_ubcf
+
+#Estimating rmse for IBCF using Cosine similarity and selected n as 350 based on cross-validation
+set.seed(1)
+
+model <- Recommender(getData(e, "train"), method = "IBCF", 
+                     param=list(normalize = "center", method="Cosine", k=350))
+
+prediction <- predict(model, getData(e, "known"), type="ratings")
+
+rmse_ibcf <- calcPredictionAccuracy(prediction, getData(e, "unknown"))[1]
+rmse_ibcf
+```
+
+
+
+
+
+
